@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -21,6 +22,8 @@ namespace Async_await
     /// </summary>
     public partial class MainWindow : Window
     {
+        CancellationTokenSource cts = new CancellationTokenSource();
+
         public MainWindow()
         {
             InitializeComponent();
@@ -40,9 +43,20 @@ namespace Async_await
 
         private async void executeAsync_Click(object sender, RoutedEventArgs e)
         {
+            Progress<ProgressReport> progress = new Progress<ProgressReport>();
+            progress.ProgressChanged += Progress_ProgressChanged;
+
             var watch = System.Diagnostics.Stopwatch.StartNew();
 
-            await RunDownloadAsync();
+            try
+            {
+                await RunDownloadAsync(progress, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                resultsWindow.Text += $"Async download cancelled { Environment.NewLine }";
+            }
+            
 
             watch.Stop();
             var elapsedMs = watch.ElapsedMilliseconds;
@@ -50,11 +64,21 @@ namespace Async_await
             resultsWindow.Text += $"Total execution time: { elapsedMs }";
         }
 
+        private void Progress_ProgressChanged(object sender, ProgressReport e)
+        {
+            progress_bar.Value = e.PercentageComplete;
+
+            foreach (var item in e.SitesDownloaded)
+            {
+                ReportWebsiteInfo(item);
+            }
+        }
+
         private async void executeAsyncParallel_Click(object sender, RoutedEventArgs e)
         {
             var watch = System.Diagnostics.Stopwatch.StartNew();
 
-            await RunDownloadParallelAsync();
+            await RunDownloadParallelAsyncV2();
 
             watch.Stop();
             var elapsedMs = watch.ElapsedMilliseconds;
@@ -89,18 +113,28 @@ namespace Async_await
             }
         }
 
-        private async Task RunDownloadAsync()
+        private async Task RunDownloadAsync(IProgress<ProgressReport> progress, CancellationToken token)
         {
             List<string> websites = PrepData();
+            List<WebsiteDataModel> sites = new List<WebsiteDataModel>();
+
+            ProgressReport report = new ProgressReport();
 
             foreach (string site in websites)
             {
-                WebsiteDataModel results = await Task.Run(() => DownloadWebsite(site));
-                ReportWebsiteInfo(results);
+                WebsiteDataModel result = await Task.Run(() => DownloadWebsite(site));
+                sites.Add(result);
+                ReportWebsiteInfo(result);
+
+                token.ThrowIfCancellationRequested();
+
+                report.SitesDownloaded = sites;
+                report.PercentageComplete = (sites.Count * 100) / websites.Count; 
+                progress.Report(report);
             }
         }
 
-        private async Task RunDownloadParallelAsync()
+        private async Task RunDownloadParallelAsyncV1()
         {
             List<string> websites = PrepData();
             List<Task<WebsiteDataModel>> tasks = new List<Task<WebsiteDataModel>>();
@@ -113,6 +147,26 @@ namespace Async_await
             var results = await Task.WhenAll(tasks);
 
             foreach (var item in results)
+            {
+                ReportWebsiteInfo(item);
+            }
+        }
+
+        private async Task RunDownloadParallelAsyncV2()
+        {
+            List<string> websites = PrepData();
+            List<WebsiteDataModel> websiteList = new List<WebsiteDataModel>();
+
+            await Task.Run(() =>
+            {
+                Parallel.ForEach<string>(websites, (site) =>
+                {
+                    WebsiteDataModel result = DownloadWebsite(site);
+                    websiteList.Add(result);
+                });
+            });
+
+            foreach (var item in websiteList)
             {
                 ReportWebsiteInfo(item);
             }
@@ -145,9 +199,9 @@ namespace Async_await
             resultsWindow.Text += $"{ data.WebsiteUrl } downloaded: { data.WebsiteData.Length } characters long.{ Environment.NewLine }";
         }
 
-        private void executeAsync_Click_1(object sender, RoutedEventArgs e)
+        private void executeCancel_Click(object sender, RoutedEventArgs e)
         {
-
+            cts.Cancel();
         }
     }
 }
